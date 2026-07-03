@@ -18,6 +18,8 @@ Step 1 — Email Header Analysis
 
 Opened the email in Thunderbird and inspected the raw source rather than the rendered message. The sending domain was a one-character typosquat of the real partner domain (bpakcaging.xyz vs. the legitimate bpackaging.xyz) — the kind of thing a busy finance employee would never catch at a glance. The DKIM-Signature and List-Unsubscribe headers pointed to ElasticEmail as the third-party relay used to send the message, a common tactic since abusing a reputable bulk-mail provider helps dodge domain-reputation-based spam filtering.
 
+![Spoofed sender domain](01-spoofed-sender-domain.png)
+
 Step 2 — Attachment Extraction
 
 The email body contained the password for a protected zip attachment (Invoice.zip). Password-protecting the payload is a deliberate move to defeat automated attachment scanners that can't open encrypted archives. Inside was a .lnk (Windows shortcut) file rather than a document with a macro — itself a signal this wasn't a typical "enable content" lure.
@@ -28,13 +30,21 @@ Ran the shortcut through LNKParse3 and found its "Command Line Arguments" field 
 
 Decoding it took a second pass: my first CyberChef recipe order mangled the encoding, because PowerShell encodes its -EncodedCommand payloads as UTF-16LE, not standard UTF-8. Adding a "Decode text" step before the Base64 decode fixed it and revealed a command using .NET WebClient to download a second file from files.bpakcaging.xyz — confirming the attacker-controlled domain was doing double duty for both the phishing lure and payload hosting.
 
+![LNK encoded PowerShell payload](02-lnk-encoded-powershell-payload.png)
+![LNKParse3 detailed output](03-lnkparse-detailed-output.png)
+
 From there I pulled the PowerShell operational log (already converted from .evtx to JSON) and used jq to extract every ScriptBlockText value. This surfaced the full attacker toolkit dropped on the host: an enumeration binary (identified as Seatbelt, a legitimate open-source security-assessment tool being repurposed maliciously here) and a SQLite command-line tool (sq3.exe) used to query a local SQLite database directly — later identified as plum.sqlite, the data store behind Microsoft Sticky Notes.
+
+![PowerShell event ID breakdown](04-powershell-event-id-breakdown.png)
+![jq-filtered CLI commands](05-jq-filtered-cli-commands.png)
 
 Step 4 — Network Traffic Analysis
 
 Pivoted to the packet capture in Wireshark, filtering on HTTP traffic to the known-bad domain/IP (167.71.211.113, cdn.bpakcaging.xyz:8080). Found repeated POST requests carrying decimal-encoded data — decoding that traffic in CyberChef confirmed the attacker was exfiltrating enumeration output and credential material over plain HTTP first.
 
 The more interesting exfiltration channel showed up separately: filtering for DNS queries to the same malicious IP revealed hundreds of oddly-formed subdomain queries against bpakcaging.xyz. Rather than a normal C2 beacon, this was nslookup being used as a DNS exfiltration tool — each query's subdomain label was actually a hex-encoded chunk of a file, reassembled query-by-query. Stitching the query names together with tshark and decoding the hex in CyberChef reconstructed a .kdbx file — a KeePass password database pulled straight off the victim's machine.
+
+![Wireshark DNS exfiltration](06-wireshark-dns-exfiltration.png)
 
 Step 5 — Root Cause / Findings (plain-language summary)
 
